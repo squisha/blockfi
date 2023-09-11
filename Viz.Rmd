@@ -1,0 +1,530 @@
+---
+title: "BlockFi Interest Account Transaction Report"
+author: "Shane Squires"
+date: "2022-10-28"
+output:
+  flexdashboard::flex_dashboard:
+    theme: 
+      version: 4
+      bootswatch: cosmo
+
+---
+
+```{r setup, include=FALSE}
+
+library(highcharter)
+library(tidyverse)
+library(lubridate)
+library(kableExtra)
+library(scales)
+library(shiny)
+library(reactable)
+library(sunburstR)
+library(d3r)
+
+library(RPostgreSQL)
+
+dsn_database = "interest_account_transactions"   
+dsn_hostname = "localhost"  
+dsn_port = "5432"           
+dsn_uid = "postgres"
+dsn_pwd = "passum"
+
+
+drv <- dbDriver("PostgreSQL")
+conn <- dbConnect(drv, 
+                      host = dsn_hostname, 
+                      port = dsn_port,
+                      user = dsn_uid, 
+                      password = dsn_pwd)
+
+wow_dau <- dbGetQuery(conn, "SELECT * FROM wow_daily_active_users")
+
+wow_dau <- wow_dau %>% mutate(date=ymd(date))
+
+dts <-  dbGetQuery(conn, "SELECT * FROM daily_transaction_summary")
+
+dts <- dts %>% mutate(date=ymd(date),
+                      week = ceiling_date(date, unit="week"))
+
+dtst <- dts %>% group_by(transaction_type, date) %>% 
+  summarise(dollar_sum = sum(abs(dollar_sum), na.rm=T),
+            quantity = sum(quantity, na.rm=T))
+
+wtst <- dts %>% group_by(transaction_type, week) %>% 
+  summarise(dollar_sum = sum(abs(dollar_sum), na.rm=T),
+            quantity = sum(quantity, na.rm=T))
+
+dtstn <- dts %>% group_by(date) %>%
+  summarise(dollar_dep_wthdrwl_net = sum(dollar_sum[transaction_type %in% c("deposit","wire_deposit")], na.rm=T)+ 
+              sum(dollar_sum[transaction_type %in% c("withdrawal", "wire_withdrawal")], na.rm=T)) 
+
+wtstn <- dts %>% group_by(week) %>%
+  summarise(dollar_dep_wthdrwl_net = sum(dollar_sum[transaction_type %in% c("deposit","wire_deposit")], na.rm=T)+ 
+              sum(dollar_sum[transaction_type %in% c("withdrawal", "wire_withdrawal")], na.rm=T)) 
+
+dcts <-  dbGetQuery(conn, "SELECT * FROM daily_customer_transaction_summary")
+
+dcts <- dcts %>% mutate(date=ymd(date))
+
+cts <- dcts %>% group_by(cryptocurrency, transaction_type) %>%
+  summarise(mean_daily_customers_transacted = mean(customers_transacted, na.rm=T),
+            mean_daily_dollar_mean = mean(dollar_mean, na.rm=T),
+            mean_daily_dollar_min = mean(dollar_min, na.rm=T),
+            mean_daily_dollar_max = mean(dollar_max, na.rm=T),
+            mean_daily_quantity_mean = mean(quantity_mean, na.rm=T),
+            mean_daily_quantity_max = mean(quantity_max, na.rm=T))
+
+### sunburst chart prep
+SB_crypto_trans_qty <- dts %>% 
+  group_by(cryptocurrency, transaction_type) %>% 
+           summarise(qty = sum(quantity, na.rm=T)) %>%
+  rename("level2"="cryptocurrency", "level1"="transaction_type","size"="qty") %>%
+  mutate_all(~replace(., is.na(.), 0))
+
+SB_crypto_trans_qty_tree <- d3_nest(SB_crypto_trans_qty, value_cols = "size")
+
+```
+
+
+ DAU {data-navmenu="Summary"}
+=========================================
+
+
+row {.tabset}
+-----------------------------------------
+
+### Daily Active Users 
+
+``` {r}
+
+highchart() %>%
+  hc_title(text = "Interest Account Daily Active Users Summary") %>%
+  hc_subtitle(text="Accounts With Notional Balance Greater Than Zero Each Day") %>% 
+  hc_yAxis_multiples(create_axis(naxis = 4, lineWidth = 2, title = list(text = NULL))) %>%
+  hc_add_series(wow_dau, name="Total Daily Active Users (DAU)", yAxis = 0,
+                hcaes(x = date, y= dau), id="DAU", type = "spline", color="purple") %>%
+    hc_add_series(wow_dau, name="Week Maximum (DAU)", yAxis = 0,
+                hcaes(x = date, y= wk_max), id="DAU", type = "spline", color="red") %>%
+    hc_add_series(wow_dau, name="Week Minimum (DAU)", yAxis = 0,
+                hcaes(x = date, y= wk_min), id="DAU", type = "spline", color="orange") %>%
+  hc_add_series(wow_dau, name="Week-Over-Week Difference DAU", yAxis = 1,
+                hcaes(x = date, y= diff), id="DIFF", type = "spline", color="red") %>%
+  hc_add_series(wow_dau, name="Week-Over-Week % Difference DAU", yAxis = 2,
+                hcaes(x = date, y= pct_diff*100), id="PCT_DIFF", type = "spline", color="green") %>%
+  hc_add_series(wow_dau, name="Weekly Moving Average DAU", yAxis = 3,
+                hcaes(x = date, y= wk_moving_avg), id="DAU", type = "spline", color="lightblue") %>%
+  hc_xAxis(dateTimeLabelFormats = list(day = '%m - %d - %y'), type = "datetime") %>%
+  hc_yAxis_multiples(list(
+    title=list(text="# Daily Active Users"),
+    align= "right",
+    top = "0%",
+    height = "29%",
+    showFirstLabel=FALSE,
+    showLastLabel=FALSE,
+    opposite=FALSE
+  ),
+  list(
+    title=list(text="Week-Over-Week Difference"),
+    align= "left",
+    top = "30%",
+    height = "20%",
+    showFirstLabel=FALSE,
+    showLastLabel=FALSE,
+    opposite=T
+  ),
+  list(
+    title=list(text="Week-Over-Week % Difference"),
+    align= "right",
+    top = "51%",
+    height = "20%",
+    showFirstLabel=FALSE,
+    showLastLabel=FALSE,
+    opposite=F,
+    tickInterval = 20,
+    labels = list(format = "{value}%"
+    )),
+  list(
+    title=list(text="Weekly Moving Average DAU"),
+    align= "right",
+    top = "72%",
+    height = "29%",
+    showFirstLabel=FALSE,
+    showLastLabel=FALSE,
+    opposite=T    )) 
+  
+ 
+```
+
+ Transaction Summary {data-navmenu="Summary"}
+=========================================
+
+
+row {.tabset}
+-----------------------------------------
+
+### Daily Transaction Summary 
+
+``` {r}
+
+highchart() %>%
+  hc_title(text = "Daily Deposit And Withdrawal Summary") %>%
+  hc_subtitle(text="Daily Interest Account Aggregates") %>% 
+  hc_yAxis_multiples(create_axis(naxis = 3, lineWidth = 2, title = list(text = NULL))) %>%
+  hc_add_series(dtst %>% filter(transaction_type=="deposit"), name="Total Deposits", yAxis = 0,
+                hcaes(x = date, y= dollar_sum), id="Deposits", type = "spline", color="purple") %>%
+  hc_add_series(dtst %>% filter(transaction_type=="wire_deposit"), name="Total Wire Deposits", yAxis = 0,
+                hcaes(x = date, y= dollar_sum), id="Wire Deposits", type = "spline", color="pink") %>%
+    hc_add_series(dtst %>% filter(transaction_type=="withdrawal"), name="Total Withdrawal", yAxis = 0,
+                hcaes(x = date, y= dollar_sum), id="withdrawal", type = "spline", color="red") %>%
+    hc_add_series(dtst %>% filter(transaction_type=="wire_withdrawal"), name="Total Wire Withdrawal", yAxis = 0,
+                hcaes(x = date, y= dollar_sum), id="wire withdrawal", type = "spline", color="green") %>%
+  ## QUANTITY of TRANSACTIONs
+    hc_add_series(dtst %>% filter(transaction_type=="deposit"), name="Total Deposits", yAxis = 1,
+                hcaes(x = date, y= quantity), linkedTo="Deposits", type = "spline", color="purple") %>%
+  hc_add_series(dtst %>% filter(transaction_type=="wire_deposit"), name="Total Wire Deposits", yAxis = 1,
+                hcaes(x = date, y= quantity), linkedTo="Wire Deposits", type = "spline", color="pink") %>%
+    hc_add_series(dtst %>% filter(transaction_type=="withdrawal"), name="Total Withdrawal", yAxis = 1,
+                hcaes(x = date, y= quantity), linkedTo="withdrawal", type = "spline", color="red") %>%
+    hc_add_series(dtst %>% filter(transaction_type=="wire_withdrawal"), name="Total Wire Withdrawal", yAxis = 1,
+                hcaes(x = date, y= quantity), linkedTo="wire withdrawal", type = "spline", color="green") %>%
+  
+      hc_add_series(dtstn, name="Net Total Deposit Minus Withdrawal", yAxis = 2,
+                hcaes(x = date, y= dollar_dep_wthdrwl_net), id="Net Deposits", type = "spline", color="purple") %>%
+  hc_xAxis(dateTimeLabelFormats = list(day = '%m - %d - %y'), type = "datetime") %>%
+  hc_yAxis_multiples(list(
+    title=list(text="Dollar Volume"),
+    align= "right",
+    top = "0%",
+    height = "33%",
+    showFirstLabel=FALSE,
+    showLastLabel=FALSE,
+    opposite=FALSE),
+  list(
+    title=list(text="Quantity of Transactions"),
+    align= "left",
+    top = "35%",
+    height = "33%",
+    showFirstLabel=FALSE,
+    showLastLabel=FALSE,
+    opposite=T),
+  list(
+    title=list(text="Net Dollar Volume"),
+    align= "right",
+    top = "70%",
+    height = "30%",
+    showFirstLabel=FALSE,
+    showLastLabel=FALSE,
+    opposite=F)
+  )
+  
+ 
+```
+
+
+### Weekly Transaction Summary 
+
+``` {r}
+
+highchart() %>%
+  hc_title(text = "Deposit And Withdrawal Summary") %>%
+  hc_subtitle(text="Weekly Interest Account Aggregates") %>% 
+  hc_yAxis_multiples(create_axis(naxis = 3, lineWidth = 2, title = list(text = NULL))) %>%
+  hc_add_series(wtst %>% filter(transaction_type=="deposit"), name="Total Deposits", yAxis = 0,
+                hcaes(x = week, y= dollar_sum), id="Deposits", type = "column", color="purple") %>%
+  hc_add_series(wtst %>% filter(transaction_type=="wire_deposit"), name="Total Wire Deposits", yAxis = 0,
+                hcaes(x = week, y= dollar_sum), id="Wire Deposits", type = "column", color="pink") %>%
+    hc_add_series(wtst %>% filter(transaction_type=="withdrawal"), name="Total Withdrawal", yAxis = 0,
+                hcaes(x = week, y= dollar_sum), id="withdrawal", type = "column", color="red") %>%
+    hc_add_series(wtst %>% filter(transaction_type=="wire_withdrawal"), name="Total Wire Withdrawal", yAxis = 0,
+                hcaes(x = week, y= dollar_sum), id="wire withdrawal", type = "column", color="green") %>%
+  ## QUANTITY of TRANSACTIONs
+    hc_add_series(wtst %>% filter(transaction_type=="deposit"), name="Total Deposits", yAxis = 1,
+                hcaes(x = week, y= quantity), linkedTo="Deposits", type = "column", color="purple") %>%
+  hc_add_series(wtst %>% filter(transaction_type=="wire_deposit"), name="Total Wire Deposits", yAxis = 1,
+                hcaes(x = week, y= quantity), linkedTo="Wire Deposits", type = "column", color="pink") %>%
+    hc_add_series(wtst %>% filter(transaction_type=="withdrawal"), name="Total Withdrawal", yAxis = 1,
+                hcaes(x = week, y= quantity), linkedTo="withdrawal", type = "column", color="red") %>%
+    hc_add_series(wtst %>% filter(transaction_type=="wire_withdrawal"), name="Total Wire Withdrawal", yAxis = 1,
+                hcaes(x = week, y= quantity), linkedTo="wire withdrawal", type = "column", color="green") %>%
+  
+      hc_add_series(wtstn, name="Net Total Deposit Minus Withdrawal", yAxis = 2,
+                hcaes(x = week, y= dollar_dep_wthdrwl_net), id="Net Deposits", type = "spline", color="purple") %>%
+  hc_xAxis(dateTimeLabelFormats = list(day = '%m - %d - %y'), type = "datetime") %>%
+  hc_yAxis_multiples(list(
+    title=list(text="Dollar Volume"),
+    align= "right",
+    top = "0%",
+    height = "33%",
+    showFirstLabel=FALSE,
+    showLastLabel=FALSE,
+    opposite=FALSE),
+  list(
+    title=list(text="Quantity of Transactions"),
+    align= "left",
+    top = "35%",
+    height = "33%",
+    showFirstLabel=FALSE,
+    showLastLabel=FALSE,
+    opposite=T),
+  list(
+    title=list(text="Net Dollar Volume"),
+    align= "right",
+    top = "70%",
+    height = "30%",
+    showFirstLabel=FALSE,
+    showLastLabel=FALSE,
+    opposite=F)
+  )
+  
+ 
+```
+
+### Total Transactions
+
+```{r}
+
+sund2b(SB_crypto_trans_qty_tree)
+
+```
+
+ Daily Customer Transaction Summary {data-navmenu="Customer"}
+=========================================
+
+
+row {.tabset}
+-----------------------------------------
+
+### Daily Customer Cryptocurrency Deposit Summary 
+
+``` {r}
+
+highchart() %>%
+  hc_title(text = "Customer Cryptocurrency Deposit Summary") %>%
+  hc_subtitle(text="Daily Interest Account Aggregates") %>% 
+  hc_yAxis_multiples(create_axis(naxis = 3, lineWidth = 2, title = list(text = NULL))) %>%
+  hc_add_series(dcts %>% filter(transaction_type=="deposit", cryptocurrency=="btc"), name="BTC", yAxis = 0,
+                hcaes(x = date, y= dollar_mean), id="BTC", type = "spline", color="purple") %>%
+  hc_add_series(dcts %>% filter(transaction_type=="deposit", cryptocurrency=="eth"), name="ETH", yAxis = 0,
+                hcaes(x = date, y= dollar_mean), id="ETH", type = "spline", color="pink") %>%
+  hc_add_series(dcts %>% filter(transaction_type=="deposit", cryptocurrency=="gusd"), name="GUSD", yAxis = 0,
+                hcaes(x = date, y= dollar_mean), id="GUSD", type = "spline", color="black") %>%
+    hc_add_series(dcts %>% filter(transaction_type=="deposit", cryptocurrency=="ltc"), name="LTC", yAxis = 0,
+                hcaes(x = date, y= dollar_mean), id="LTC", type = "spline", color="red") %>%
+    hc_add_series(dcts %>% filter(transaction_type=="deposit", cryptocurrency=="usdc"), name="USDC", yAxis = 0,
+                hcaes(x = date, y= dollar_mean), id="USDC", type = "spline", color="green") %>%
+  hc_add_series(dcts %>% filter(transaction_type=="deposit", cryptocurrency=="pax"), name="PAX", yAxis = 0,
+                hcaes(x = date, y= dollar_mean), id="PAX", type = "spline", color="orange") %>%
+  ## QUANTITY of TRANSACTIONs
+  hc_add_series(dcts %>% filter(transaction_type=="deposit", cryptocurrency=="btc"), name="BTC", yAxis = 1,
+                hcaes(x = date, y= quantity_mean), linkedTo="BTC", type = "spline", color="purple") %>%
+  hc_add_series(dcts %>% filter(transaction_type=="deposit", cryptocurrency=="eth"), name="ETH", yAxis = 1,
+                hcaes(x = date, y= quantity_mean), linkedTo="ETH", type = "spline", color="pink") %>%
+  hc_add_series(dcts %>% filter(transaction_type=="deposit", cryptocurrency=="gusd"), name="GUSD", yAxis = 1,
+                hcaes(x = date, y= quantity_mean), linkedTo="GUSD", type = "spline", color="black") %>%
+    hc_add_series(dcts %>% filter(transaction_type=="deposit", cryptocurrency=="ltc"), name="LTC", yAxis = 1,
+                hcaes(x = date, y= quantity_mean), linkedTo="LTC", type = "spline", color="red") %>%
+    hc_add_series(dcts %>% filter(transaction_type=="deposit", cryptocurrency=="usdc"), name="USDC", yAxis = 1,
+                hcaes(x = date, y= quantity_mean), linkedTo="USDC", type = "spline", color="green") %>%
+  hc_add_series(dcts %>% filter(transaction_type=="deposit", cryptocurrency=="pax"), name="PAX", yAxis = 1,
+                hcaes(x = date, y= quantity_mean), linkedTo="PAX", type = "spline", color="orange") %>%
+  
+  hc_add_series(dcts %>% filter(transaction_type=="deposit", cryptocurrency=="btc"), name="BTC", yAxis = 2,
+                hcaes(x = date, y= dollar_75th_percentile), linkedTo="BTC", type = "spline", color="purple") %>%
+  hc_add_series(dcts %>% filter(transaction_type=="deposit", cryptocurrency=="eth"), name="ETH", yAxis = 2,
+                hcaes(x = date, y= dollar_75th_percentile), linkedTo="ETH", type = "spline", color="pink") %>%
+  hc_add_series(dcts %>% filter(transaction_type=="deposit", cryptocurrency=="gusd"), name="GUSD", yAxis = 2,
+                hcaes(x = date, y= dollar_75th_percentile), linkedTo="GUSD", type = "spline", color="black") %>%
+    hc_add_series(dcts %>% filter(transaction_type=="deposit", cryptocurrency=="ltc"), name="LTC", yAxis = 2,
+                hcaes(x = date, y= dollar_75th_percentile), linkedTo="LTC", type = "spline", color="red") %>%
+    hc_add_series(dcts %>% filter(transaction_type=="deposit", cryptocurrency=="usdc"), name="USDC", yAxis = 2,
+                hcaes(x = date, y= dollar_75th_percentile), linkedTo="USDC", type = "spline", color="green") %>%
+  hc_add_series(dcts %>% filter(transaction_type=="deposit", cryptocurrency=="pax"), name="PAX", yAxis = 2,
+                hcaes(x = date, y= dollar_75th_percentile), linkedTo="PAX", type = "spline", color="orange") %>%
+  hc_xAxis(dateTimeLabelFormats = list(day = '%m - %d - %y'), type = "datetime") %>%
+  hc_yAxis_multiples(list(
+    title=list(text="Mean Dollar Volume"),
+    align= "right",
+    top = "0%",
+    height = "33%",
+    showFirstLabel=FALSE,
+    showLastLabel=FALSE,
+    opposite=FALSE),
+  list(
+    title=list(text="Mean Quantity of Transactions"),
+    align= "left",
+    top = "35%",
+    height = "33%",
+    showFirstLabel=FALSE,
+    showLastLabel=FALSE,
+    opposite=T),
+  list(
+    title=list(text="75th Percentile Dollar Amount"),
+    align= "right",
+    top = "70%",
+    height = "30%",
+    showFirstLabel=FALSE,
+    showLastLabel=FALSE,
+    opposite=F)
+  )
+  
+ 
+```
+
+### Daily Customer Cryptocurrency Withdrawal Summary 
+
+``` {r}
+
+highchart() %>%
+  hc_title(text = "Customer Cryptocurrency Withdrawal Summary") %>%
+  hc_subtitle(text="Daily Interest Account Aggregates") %>% 
+  hc_yAxis_multiples(create_axis(naxis = 3, lineWidth = 2, title = list(text = NULL))) %>%
+  hc_add_series(dcts %>% filter(transaction_type=="withdrawal", cryptocurrency=="btc"), name="BTC", yAxis = 0,
+                hcaes(x = date, y= dollar_mean), id="BTC", type = "spline", color="purple") %>%
+  hc_add_series(dcts %>% filter(transaction_type=="withdrawal", cryptocurrency=="eth"), name="ETH", yAxis = 0,
+                hcaes(x = date, y= dollar_mean), id="ETH", type = "spline", color="pink") %>%
+  hc_add_series(dcts %>% filter(transaction_type=="withdrawal", cryptocurrency=="gusd"), name="GUSD", yAxis = 0,
+                hcaes(x = date, y= dollar_mean), id="GUSD", type = "spline", color="black") %>%
+    hc_add_series(dcts %>% filter(transaction_type=="withdrawal", cryptocurrency=="ltc"), name="LTC", yAxis = 0,
+                hcaes(x = date, y= dollar_mean), id="LTC", type = "spline", color="red") %>%
+    hc_add_series(dcts %>% filter(transaction_type=="withdrawal", cryptocurrency=="usdc"), name="USDC", yAxis = 0,
+                hcaes(x = date, y= dollar_mean), id="USDC", type = "spline", color="green") %>%
+  hc_add_series(dcts %>% filter(transaction_type=="withdrawal", cryptocurrency=="pax"), name="PAX", yAxis = 0,
+                hcaes(x = date, y= dollar_mean), id="PAX", type = "spline", color="orange") %>%
+  ## QUANTITY of TRANSACTIONs
+  hc_add_series(dcts %>% filter(transaction_type=="withdrawal", cryptocurrency=="btc"), name="BTC", yAxis = 1,
+                hcaes(x = date, y= quantity_mean), linkedTo="BTC", type = "spline", color="purple") %>%
+  hc_add_series(dcts %>% filter(transaction_type=="withdrawal", cryptocurrency=="eth"), name="ETH", yAxis = 1,
+                hcaes(x = date, y= quantity_mean), linkedTo="ETH", type = "spline", color="pink") %>%
+  hc_add_series(dcts %>% filter(transaction_type=="withdrawal", cryptocurrency=="gusd"), name="GUSD", yAxis = 1,
+                hcaes(x = date, y= quantity_mean), linkedTo="GUSD", type = "spline", color="black") %>%
+    hc_add_series(dcts %>% filter(transaction_type=="withdrawal", cryptocurrency=="ltc"), name="LTC", yAxis = 1,
+                hcaes(x = date, y= quantity_mean), linkedTo="LTC", type = "spline", color="red") %>%
+    hc_add_series(dcts %>% filter(transaction_type=="withdrawal", cryptocurrency=="usdc"), name="USDC", yAxis = 1,
+                hcaes(x = date, y= quantity_mean), linkedTo="USDC", type = "spline", color="green") %>%
+  hc_add_series(dcts %>% filter(transaction_type=="withdrawal", cryptocurrency=="pax"), name="PAX", yAxis = 1,
+                hcaes(x = date, y= quantity_mean), linkedTo="PAX", type = "spline", color="orange") %>%
+  
+  hc_add_series(dcts %>% filter(transaction_type=="withdrawal", cryptocurrency=="btc"), name="BTC", yAxis = 2,
+                hcaes(x = date, y= dollar_75th_percentile), linkedTo="BTC", type = "spline", color="purple") %>%
+  hc_add_series(dcts %>% filter(transaction_type=="withdrawal", cryptocurrency=="eth"), name="ETH", yAxis = 2,
+                hcaes(x = date, y= dollar_75th_percentile), linkedTo="ETH", type = "spline", color="pink") %>%
+  hc_add_series(dcts %>% filter(transaction_type=="withdrawal", cryptocurrency=="gusd"), name="GUSD", yAxis = 2,
+                hcaes(x = date, y= dollar_75th_percentile), linkedTo="GUSD", type = "spline", color="black") %>%
+    hc_add_series(dcts %>% filter(transaction_type=="withdrawal", cryptocurrency=="ltc"), name="LTC", yAxis = 2,
+                hcaes(x = date, y= dollar_75th_percentile), linkedTo="LTC", type = "spline", color="red") %>%
+    hc_add_series(dcts %>% filter(transaction_type=="withdrawal", cryptocurrency=="usdc"), name="USDC", yAxis = 2,
+                hcaes(x = date, y= dollar_75th_percentile), linkedTo="USDC", type = "spline", color="green") %>%
+  hc_add_series(dcts %>% filter(transaction_type=="withdrawal", cryptocurrency=="pax"), name="PAX", yAxis = 2,
+                hcaes(x = date, y= dollar_75th_percentile), linkedTo="PAX", type = "spline", color="orange") %>%
+  hc_xAxis(dateTimeLabelFormats = list(day = '%m - %d - %y'), type = "datetime") %>%
+  hc_yAxis_multiples(list(
+    title=list(text="Mean Dollar Volume"),
+    align= "right",
+    top = "0%",
+    height = "33%",
+    showFirstLabel=FALSE,
+    showLastLabel=FALSE,
+    opposite=FALSE),
+  list(
+    title=list(text="Mean Quantity of Transactions"),
+    align= "left",
+    top = "35%",
+    height = "33%",
+    showFirstLabel=FALSE,
+    showLastLabel=FALSE,
+    opposite=T),
+  list(
+    title=list(text="75th Percentile Dollar Amount"),
+    align= "right",
+    top = "70%",
+    height = "30%",
+    showFirstLabel=FALSE,
+    showLastLabel=FALSE,
+    opposite=F)
+  )
+  
+ 
+```
+
+Customer Transaction Summary {data-navmenu="Customer"}
+=========================================
+
+
+row {.tabset}
+-----------------------------------------
+
+### Customer Transaction Summary
+
+``` {r}
+
+reactable(cts ,
+          pagination = FALSE,
+          groupBy = "cryptocurrency",
+          columnGroups = list(
+            colGroup(name = "Transaction Quantity", columns = c("mean_daily_customers_transacted","mean_daily_quantity_mean","mean_daily_quantity_max")),
+            colGroup(name = "Transaction Amount", columns = c("mean_daily_dollar_mean","mean_daily_dollar_min","mean_daily_dollar_max"))
+            ),
+          defaultColDef = colDef(
+            vAlign = "center",
+            headerVAlign = "bottom",
+            class = "cell",
+            headerClass = "header"
+          ),
+          rowStyle = JS("function(rowInfo) {
+    if (rowInfo.level > 0) {
+      return { background: '#eee', borderLeft: '2px solid #ffa62d' }
+    } else {
+      return { borderLeft: '2px solid transparent' }
+    }
+  }"),
+          defaultExpanded = TRUE,
+          columns = list(
+            cryptocurrency = colDef(
+              name="Cryptocurrency",
+              defaultSortOrder = "asc",
+              minWidth = 200,
+              headerStyle = list(fontWeight = 700) ),
+            transaction_type = colDef(
+              name="Transaction Type",
+              format = colFormat(digits=2),
+              defaultSortOrder = "asc",
+              minWidth = 200,
+              headerStyle = list(fontWeight = 700) ),
+            mean_daily_customers_transacted = colDef(
+              name = "Mean Daily Number of Customers Transacted",
+              format = colFormat(digits=2),
+              defaultSortOrder = "asc", 
+              align = "center", 
+              class = "Transaction Quantity", headerStyle = list(fontWeight = 700)),
+            mean_daily_quantity_mean = colDef(
+              name = "Mean Daily Transactions per Customer",
+              format = colFormat(digits=2),
+              defaultSortOrder = "asc", 
+              align = "center", 
+              class = "Transaction Quantity", headerStyle = list(fontWeight = 700)),
+            mean_daily_quantity_max = colDef(
+              name = "Mean Daily Maximum Transaction per Customer",
+              format = colFormat(digits=2),
+              defaultSortOrder = "asc", 
+              align = "center", 
+              class = "Transaction Quantity", headerStyle = list(fontWeight = 700)),
+            mean_daily_dollar_mean = colDef(
+              name = "Daily Mean Dollar Amount",
+              format = colFormat(prefix = "$", separators = TRUE, digits=0),
+              defaultSortOrder = "asc", 
+              align = "center", 
+              class = "Transaction Amount", headerStyle = list(fontWeight = 700)),
+            mean_daily_dollar_max = colDef(
+              name = "Mean Daily Maximum Dollar Amount",
+              format = colFormat(prefix = "$", separators = TRUE, digits=0),
+              defaultSortOrder = "asc", 
+              align = "center", 
+              class = "Transaction Amount", headerStyle = list(fontWeight = 700)),
+            mean_daily_dollar_min = colDef(
+              name = "Mean Daily Minimum Dollar Amount",
+              format = colFormat(prefix = "$", separators = TRUE, digits=0),
+              defaultSortOrder = "asc", 
+              align = "center", 
+              class = "Transaction Amount", headerStyle = list(fontWeight = 700))) )
+```
